@@ -1,4 +1,4 @@
-# UDP Load Testing Tool (udpnull) - Research Implementation
+# UDP Load Testing Tool (UdpNull) - Research Implementation
 
 ## Abstract
 
