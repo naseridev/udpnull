@@ -181,7 +181,7 @@ impl Engine {
     }
 }
 
-async fn null_worker(
+struct WorkerConfig {
     id: usize,
     target: SocketAddr,
     pps: u64,
@@ -189,26 +189,30 @@ async fn null_worker(
     random_ports: bool,
     random_src: bool,
     fragment: bool,
-    metrics: Arc<Metrics>,
-) {
-    let mut engine = match Engine::new(id, packet_size, random_src) {
+}
+
+async fn null_worker(config: WorkerConfig, metrics: Arc<Metrics>) {
+    let mut engine = match Engine::new(config.id, config.packet_size, config.random_src) {
         Ok(e) => e,
         Err(_) => return,
     };
 
-    let base_interval_ns = if pps > 0 { 1_000_000_000 / pps } else { 1000 };
+    let base_interval_ns = if config.pps > 0 {
+        1_000_000_000 / config.pps
+    } else {
+        1000
+    };
     let mut interval_ns = base_interval_ns;
     let mut next_send = tokio::time::Instant::now();
     let mut consecutive_errors = 0u32;
 
-    let burst_size = match pps {
+    let burst_size = (match config.pps {
         0..=1000 => 1,
-        1001..=10000 => pps / 1000,
-        10001..=100000 => pps / 5000,
-        _ => pps / 10000,
-    }
-    .max(1)
-    .min(100);
+        1001..=10000 => config.pps / 1000,
+        10001..=100000 => config.pps / 5000,
+        _ => config.pps / 10000,
+    })
+    .clamp(1, 100);
 
     while metrics.is_running() {
         let now = tokio::time::Instant::now();
@@ -221,14 +225,14 @@ async fn null_worker(
                     break;
                 }
 
-                match engine.send_null_packet(target, random_ports, fragment) {
+                match engine.send_null_packet(config.target, config.random_ports, config.fragment) {
                     Ok(bytes) => {
                         metrics.add_sent(bytes.max(1) as u64);
                         burst_sent += 1;
                         consecutive_errors = 0;
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        metrics.add_sent(packet_size.max(1) as u64);
+                        metrics.add_sent(config.packet_size.max(1) as u64);
                         burst_sent += 1;
                         consecutive_errors = 0;
                     }
@@ -255,7 +259,7 @@ async fn null_worker(
             }
         }
 
-        if id % 8 == 0 {
+        if config.id % 8 == 0 {
             tokio::task::yield_now().await;
         }
     }
@@ -310,16 +314,16 @@ async fn main() -> Result<()> {
 
     for id in 0..thread_count {
         let metrics_clone = Arc::clone(&metrics);
-        let handle = tokio::spawn(null_worker(
+        let worker_config = WorkerConfig {
             id,
-            target_addr,
-            config.pps,
-            config.size,
-            config.random_ports,
-            config.random_src,
-            config.fragment,
-            metrics_clone,
-        ));
+            target: target_addr,
+            pps: config.pps,
+            packet_size: config.size,
+            random_ports: config.random_ports,
+            random_src: config.random_src,
+            fragment: config.fragment,
+        };
+        let handle = tokio::spawn(null_worker(worker_config, metrics_clone));
         handles.push(handle);
     }
 
